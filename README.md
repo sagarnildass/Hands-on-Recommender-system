@@ -6,7 +6,7 @@ Master recommendation systems from fundamentals to advanced techniques through h
 
 ## 📚 Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Basic understanding of:
   - Linear algebra
   - Statistics and probability
