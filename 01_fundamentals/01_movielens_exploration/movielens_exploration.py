@@ -133,6 +133,7 @@ def analyze_user_item_activity(ratings):
     plt.tight_layout()
     plt.show()
 
+
 def analyze_sparsity(ratings):
     """
     Analyze the sparsity of the user-item matrix
@@ -140,82 +141,98 @@ def analyze_sparsity(ratings):
     print("\n=== Sparsity Analysis ===")
 
     # Calculate sparsity
-    total_possible_ratings = len(ratings['userId'].unique()) * len(ratings['movieId'].unique())
+    total_possible_ratings = len(ratings["userId"].unique()) * len(
+        ratings["movieId"].unique()
+    )
     actual_ratings = len(ratings)
     sparsity = (1 - (actual_ratings / total_possible_ratings)) * 100
-    
+
     print(f"Total possible ratings: {total_possible_ratings:,}")
     print(f"Actual ratings: {actual_ratings:,}")
     print(f"Sparsity: {sparsity:.2f}%")
     print(f"Density: {100-sparsity:.2f}%")
-    
+
     # What does this mean?
     print(f"\nInterpretation:")
-    print(f"- Only {100-sparsity:.2f}% of all possible user-movie combinations have ratings")
+    print(
+        f"- Only {100-sparsity:.2f}% of all possible user-movie combinations have ratings"
+    )
     print(f"- {sparsity:.2f}% of the user-item matrix is empty!")
+
 
 def calculate_basic_metrics(ratings):
     """
     Calculate basic evaluation metrics for recommendation systems
     """
     print("\n=== Basic Evaluation Metrics ===")
-    
+
     # Calculate RMSE for rating prediction
     # For now, let's calculate it against the mean rating
-    mean_rating = ratings['rating'].mean()
-    mse = ((ratings['rating'] - mean_rating) ** 2).mean()
+    mean_rating = ratings["rating"].mean()
+    mse = ((ratings["rating"] - mean_rating) ** 2).mean()
     rmse = np.sqrt(mse)
-    
+
     print(f"Mean rating: {mean_rating:.2f}")
     print(f"RMSE (vs mean): {rmse:.2f}")
 
     # Rating distribution by user activity
     print(f"\nRating patterns by user activity:")
-    active_users = ratings.groupby('userId').size() > 100 # Users with at least 100 ratings
-    active_user_ratings = ratings[ratings['userId'].isin(active_users[active_users].index)]
-    inactive_user_ratings = ratings[ratings['userId'].isin(active_users[~active_users].index)]
-    
+    active_users = (
+        ratings.groupby("userId").size() > 100
+    )  # Users with at least 100 ratings
+    active_user_ratings = ratings[
+        ratings["userId"].isin(active_users[active_users].index)
+    ]
+    inactive_user_ratings = ratings[
+        ratings["userId"].isin(active_users[~active_users].index)
+    ]
+
     print(f"Active users (>100 ratings): {len(active_user_ratings['userId'].unique())}")
     print(f"Active users avg rating: {active_user_ratings['rating'].mean():.2f}")
     print(f"Inactive users avg rating: {inactive_user_ratings['rating'].mean():.2f}")
+
 
 def generate_summary_insights(ratings, movies, users):
     """
     Generate summary insights and key takeaways
     """
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("🎯 KEY INSIGHTS & CHALLENGES FOR RECOMMENDATION SYSTEMS")
-    print("="*60)
-    
+    print("=" * 60)
+
     print("\n📊 DATA CHARACTERISTICS:")
-    print(f"• Dataset: {len(ratings):,} ratings, {len(users)} users, {len(movies)} movies")
+    print(
+        f"• Dataset: {len(ratings):,} ratings, {len(users)} users, {len(movies)} movies"
+    )
     print(f"• Sparsity: 95.53% (major challenge!)")
     print(f"• Rating bias: 57.5% are 4-5 stars")
-    
+
     print("\n🎭 USER BEHAVIOR PATTERNS:")
     print(f"• Long tail: Most users rate few movies, few users rate many")
-    print(f"• Activity difference: Active users (3.55 avg) vs Inactive users (3.77 avg)")
+    print(
+        f"• Activity difference: Active users (3.55 avg) vs Inactive users (3.77 avg)"
+    )
     print(f"• Rating inflation: Users tend to rate things they like")
-    
+
     print("\n🚨 MAJOR CHALLENGES:")
     print("1. COLD START: New users/items have no ratings")
     print("2. SPARSITY: 95.53% of user-item matrix is empty")
     print("3. RATING BIAS: Most ratings are positive")
     print("4. POPULARITY BIAS: Popular items get more ratings")
     print("5. DIVERSITY: How to recommend diverse items?")
-    
+
     print("\n🔧 ALGORITHM REQUIREMENTS:")
     print("• Must handle sparse data efficiently")
     print("• Should address cold start problems")
     print("• Need to balance accuracy vs diversity")
     print("• Must be scalable for large datasets")
-    
+
     print("\n📈 NEXT STEPS:")
     print("• Project 2: Content-based filtering")
     print("• Project 3: Collaborative filtering")
     print("• Project 4: Matrix factorization")
     print("• Project 5: Evaluation frameworks")
-    
+
 
 if __name__ == "__main__":
     download_movielens_data()
