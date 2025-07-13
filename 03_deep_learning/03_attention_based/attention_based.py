@@ -30,7 +30,7 @@ class AttentionLayer(nn.Module):
 
     def forward(self, x, mask=None):
         batch_size, seq_len, embed_dim = x.size()
-        
+
         # Linear transformations
         Q = self.query(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
         K = self.key(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
