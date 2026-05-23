@@ -230,6 +230,16 @@ def encode_features(row, encoders):
     return user_feats, item_feats
 
 
+def encode_item_features(row, encoders):
+    """Encode only item features (for movies dataframe which has no user columns)"""
+    return (
+        encoders["item_to_idx"].get(row["movieId"], 0),
+        encoders["genre_to_idx"].get(row["genre"], 0),
+        encoders["year_to_idx"].get(row["year"], 0),
+        encoders["context_to_idx"].get(row.get("context", 0), 0),
+    )
+
+
 def compute_user_history_embeddings(
     ratings_df, item_emb_matrix, item_encoder, history_length=5
 ):
@@ -362,7 +372,7 @@ def get_item_embeddings(model, items_df, encoders, device="cuda", batch_size=256
             # Encode all items in batch
             item_ids, genres, years, contexts = [], [], [], []
             for _, row in batch_items.iterrows():
-                feats = encode_features(row, encoders)[1]
+                feats = encode_item_features(row, encoders)
                 item_ids.append(feats[0])
                 genres.append(feats[1])
                 years.append(feats[2])
