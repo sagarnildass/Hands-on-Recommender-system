@@ -11,6 +11,11 @@ from tqdm import tqdm
 import random
 import time
 
+# Optimize PyTorch for GPU
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
+torch.autograd.set_detect_anomaly(False)
+
 # ------------------ Model Definitions ------------------
 
 
@@ -29,17 +34,21 @@ class UserTower(nn.Module):
     ):
         super().__init__()
         self.user_id_emb = nn.Embedding(num_users, embed_dim)
-        self.age_emb = nn.Embedding(num_ages, 8)
-        self.gender_emb = nn.Embedding(num_genders, 4)
-        self.occupation_emb = nn.Embedding(num_occupations, 8)
-        self.zip_emb = nn.Embedding(num_zipcodes, 8)
-        self.context_emb = nn.Embedding(num_contexts, 8)
-        self.history_proj = nn.Linear(history_embed_dim, 16)
+        self.age_emb = nn.Embedding(num_ages, 16)
+        self.gender_emb = nn.Embedding(num_genders, 16)
+        self.occupation_emb = nn.Embedding(num_occupations, 16)
+        self.zip_emb = nn.Embedding(num_zipcodes, 16)
+        self.context_emb = nn.Embedding(num_contexts, 16)
+        self.history_proj = nn.Linear(history_embed_dim, 64)
+        # Calculate input dim: embed_dim + 5*16 + 64
+        input_dim = embed_dim + 5*16 + 64
         self.mlp = nn.Sequential(
-            nn.Linear(embed_dim + 8 + 4 + 8 + 8 + 8 + 16, hidden_dims[0]),
+            nn.Linear(input_dim, hidden_dims[0]),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dims[0], hidden_dims[1]),
             nn.ReLU(),
+            nn.Dropout(0.2),
         )
 
     def forward(self, user_id, age, gender, occupation, zipcode, context, history_emb):
@@ -70,14 +79,18 @@ class ItemTower(nn.Module):
     ):
         super().__init__()
         self.item_id_emb = nn.Embedding(num_items, embed_dim)
-        self.genre_emb = nn.Embedding(num_genres, 8)
-        self.year_emb = nn.Embedding(num_years, 4)
-        self.context_emb = nn.Embedding(num_contexts, 8)
+        self.genre_emb = nn.Embedding(num_genres, 16)
+        self.year_emb = nn.Embedding(num_years, 16)
+        self.context_emb = nn.Embedding(num_contexts, 16)
+        # Calculate input dim: embed_dim + 3*16
+        input_dim = embed_dim + 3*16
         self.mlp = nn.Sequential(
-            nn.Linear(embed_dim + 8 + 4 + 8, hidden_dims[0]),
+            nn.Linear(input_dim, hidden_dims[0]),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dims[0], hidden_dims[1]),
             nn.ReLU(),
+            nn.Dropout(0.2),
         )
 
     def forward(self, item_id, genre, year, context):
@@ -174,6 +187,8 @@ def build_feature_encoders(users_df, items_df, ratings_df):
     genre_encoder = LabelEncoder().fit(items_df["genre"])
     year_encoder = LabelEncoder().fit(items_df["year"])
     context_encoder = LabelEncoder().fit([0, 1, 2, 3])
+    
+    # Create fast dict-based lookup tables
     return dict(
         user=user_encoder,
         age=age_encoder,
@@ -184,23 +199,35 @@ def build_feature_encoders(users_df, items_df, ratings_df):
         genre=genre_encoder,
         year=year_encoder,
         context=context_encoder,
+        # Lookup dicts for O(1) encoding
+        user_to_idx={val: idx for idx, val in enumerate(user_encoder.classes_)},
+        age_to_idx={val: idx for idx, val in enumerate(age_encoder.classes_)},
+        gender_to_idx={val: idx for idx, val in enumerate(gender_encoder.classes_)},
+        occupation_to_idx={val: idx for idx, val in enumerate(occupation_encoder.classes_)},
+        zip_to_idx={val: idx for idx, val in enumerate(zip_encoder.classes_)},
+        item_to_idx={val: idx for idx, val in enumerate(item_encoder.classes_)},
+        genre_to_idx={val: idx for idx, val in enumerate(genre_encoder.classes_)},
+        year_to_idx={val: idx for idx, val in enumerate(year_encoder.classes_)},
+        context_to_idx={0: 0, 1: 1, 2: 2, 3: 3},
     )
 
 
 def encode_features(row, encoders):
-    return (
-        encoders["user"].transform([row["userId"]])[0],
-        encoders["age"].transform([row["age"]])[0],
-        encoders["gender"].transform([row["gender"]])[0],
-        encoders["occupation"].transform([row["occupation"]])[0],
-        encoders["zip"].transform([row["zip_code"]])[0],
-        encoders["context"].transform([row["context"]])[0],
-    ), (
-        encoders["item"].transform([row["movieId"]])[0],
-        encoders["genre"].transform([row["genre"]])[0],
-        encoders["year"].transform([row["year"]])[0],
-        encoders["context"].transform([row["context"]])[0],
+    user_feats = (
+        encoders["user_to_idx"].get(row["userId"], 0),
+        encoders["age_to_idx"].get(row["age"], 0),
+        encoders["gender_to_idx"].get(row["gender"], 0),
+        encoders["occupation_to_idx"].get(row["occupation"], 0),
+        encoders["zip_to_idx"].get(row["zip_code"], 0),
+        encoders["context_to_idx"].get(row["context"], 0),
     )
+    item_feats = (
+        encoders["item_to_idx"].get(row["movieId"], 0),
+        encoders["genre_to_idx"].get(row["genre"], 0),
+        encoders["year_to_idx"].get(row["year"], 0),
+        encoders["context_to_idx"].get(row["context"], 0),
+    )
+    return user_feats, item_feats
 
 
 def compute_user_history_embeddings(
@@ -264,39 +291,54 @@ def collate_fn(batch):
     return user_feats, item_feats, history_embs, labels
 
 
-def train_two_tower(model, dataloader, optimizer, device="mps", epochs=5):
+def train_two_tower(model, dataloader, optimizer, device="cuda", epochs=5, grad_accumulation_steps=2):
     model.train()
     criterion = nn.BCEWithLogitsLoss()
+    scaler = torch.amp.GradScaler('cuda')
+    
     for epoch in range(epochs):
         total_loss = 0.0
-        for user_feats, item_feats, history_embs, labels in tqdm(
+        accumulated_loss = 0.0
+        
+        for batch_idx, (user_feats, item_feats, history_embs, labels) in enumerate(tqdm(
             dataloader, desc=f"Epoch {epoch+1}"
-        ):
-            user_feats = user_feats.to(device)
-            item_feats = item_feats.to(device)
-            history_embs = history_embs.to(device)
-            labels = labels.to(device)
+        )):
+            user_feats = user_feats.to(device, non_blocking=True)
+            item_feats = item_feats.to(device, non_blocking=True)
+            history_embs = history_embs.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            
             user_id, age, gender, occupation, zipcode, context = [
                 user_feats[:, i] for i in range(6)
             ]
             item_id, genre, year, item_context = [item_feats[:, i] for i in range(4)]
-            user_emb = model.user_tower(
-                user_id, age, gender, occupation, zipcode, context, history_embs
-            )
-            item_emb = model.item_tower(item_id, genre, year, item_context)
-            logits = (user_emb * item_emb).sum(dim=-1)
-            loss = criterion(logits, labels)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(f"Epoch {epoch+1}: Loss = {total_loss / len(dataloader):.4f}")
+            
+            with torch.amp.autocast('cuda'):
+                user_emb = model.user_tower(
+                    user_id, age, gender, occupation, zipcode, context, history_embs
+                )
+                item_emb = model.item_tower(item_id, genre, year, item_context)
+                logits = (user_emb * item_emb).sum(dim=-1)
+                loss = criterion(logits, labels) / grad_accumulation_steps
+            
+            scaler.scale(loss).backward()
+            accumulated_loss += loss.item()
+            
+            if (batch_idx + 1) % grad_accumulation_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                total_loss += accumulated_loss
+                accumulated_loss = 0.0
+        
+        avg_loss = total_loss / (len(dataloader) // grad_accumulation_steps)
+        print(f"Epoch {epoch+1}: Loss = {avg_loss:.4f}")
 
 
 # ------------------ Candidate Generation & Reranking ------------------
 
 
-def get_user_embedding(model, user_feats, history_emb, device="mps"):
+def get_user_embedding(model, user_feats, history_emb, device="cuda"):
     user_id, age, gender, occupation, zipcode, context = [
         torch.LongTensor([user_feats[i]]).to(device) for i in range(6)
     ]
@@ -308,18 +350,37 @@ def get_user_embedding(model, user_feats, history_emb, device="mps"):
     return user_emb.cpu().numpy().squeeze(0)
 
 
-def get_item_embeddings(model, items_df, encoders, device="mps"):
+def get_item_embeddings(model, items_df, encoders, device="cuda", batch_size=256):
+    """Batch encode all items for fast embedding generation"""
     item_embs = []
-    for _, row in items_df.iterrows():
-        item_id, genre, year, context = encode_features(row, encoders)[1]
-        item_id = torch.LongTensor([item_id]).to(device)
-        genre = torch.LongTensor([genre]).to(device)
-        year = torch.LongTensor([year]).to(device)
-        context = torch.LongTensor([context]).to(device)
-        with torch.no_grad():
-            emb = model.item_tower(item_id, genre, year, context)
-        item_embs.append(emb.cpu().numpy().squeeze(0))
-    return np.stack(item_embs)
+    
+    with torch.no_grad():
+        for batch_start in range(0, len(items_df), batch_size):
+            batch_end = min(batch_start + batch_size, len(items_df))
+            batch_items = items_df.iloc[batch_start:batch_end]
+            
+            # Encode all items in batch
+            item_ids, genres, years, contexts = [], [], [], []
+            for _, row in batch_items.iterrows():
+                feats = encode_features(row, encoders)[1]
+                item_ids.append(feats[0])
+                genres.append(feats[1])
+                years.append(feats[2])
+                contexts.append(feats[3])
+            
+            # Move to GPU as batches
+            item_ids = torch.LongTensor(item_ids).to(device, non_blocking=True)
+            genres = torch.LongTensor(genres).to(device, non_blocking=True)
+            years = torch.LongTensor(years).to(device, non_blocking=True)
+            contexts = torch.LongTensor(contexts).to(device, non_blocking=True)
+            
+            # Get embeddings for entire batch
+            with torch.amp.autocast('cuda'):
+                embs = model.item_tower(item_ids, genres, years, contexts)
+            
+            item_embs.append(embs.cpu().numpy())
+    
+    return np.vstack(item_embs)
 
 
 def generate_candidates(user_emb, item_emb_matrix, top_k=100):
@@ -336,7 +397,7 @@ def rerank_candidates(
     model,
     encoders,
     items_df,
-    device="mps",
+    device="cuda",
 ):
     rerank_scores = []
     user_id, age, gender, occupation, zipcode, context = [
@@ -422,18 +483,25 @@ if __name__ == "__main__":
 
     # 3. Build encoders and user history embeddings
     encoders = build_feature_encoders(users, movies, ratings)
-    dummy_item_emb_matrix = np.random.randn(len(movies), 32).astype(np.float32)
+    # Match the history_embed_dim=512 used in model
+    dummy_item_emb_matrix = np.random.randn(len(movies), 512).astype(np.float32)
     user_hist_embs = compute_user_history_embeddings(
         ratings, dummy_item_emb_matrix, encoders["item"]
     )
 
-    # 4. Prepare dataset and dataloader
+    # 4. Prepare dataset and dataloader with GPU optimization - MAXIMIZE memory usage
     dataset = TwoTowerDataset(ratings, users, movies, encoders, user_hist_embs)
     dataloader = DataLoader(
-        dataset, batch_size=128, shuffle=True, collate_fn=collate_fn
+        dataset,
+        batch_size=4096,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=8,
+        pin_memory=True,
+        prefetch_factor=4,
     )
 
-    # 5. Initialize and train two-tower model
+    # 5. Initialize and train two-tower model with MASSIVE capacity to use full 32GB
     model = TwoTowerModel(
         num_users=len(encoders["user"].classes_),
         num_ages=len(encoders["age"].classes_),
@@ -444,16 +512,17 @@ if __name__ == "__main__":
         num_genres=len(encoders["genre"].classes_),
         num_years=len(encoders["year"].classes_),
         num_contexts=4,
-        history_embed_dim=32,
-        embed_dim=32,
-        hidden_dims=[128, 64],
+        history_embed_dim=512,
+        embed_dim=1024,
+        hidden_dims=[8192, 4096],
     )
-    model = model.to("mps")
+    model = model.to("cuda")
+    print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    train_two_tower(model, dataloader, optimizer, device="mps", epochs=5)
+    train_two_tower(model, dataloader, optimizer, device="cuda", epochs=5, grad_accumulation_steps=4)
 
     # 6. Generate all item embeddings
-    item_emb_matrix = get_item_embeddings(model, movies, encoders, device="mps")
+    item_emb_matrix = get_item_embeddings(model, movies, encoders, device="cuda")
 
     # 7. For a test user, get embedding and generate candidates
     test_user_row = users.iloc[0]
@@ -462,7 +531,7 @@ if __name__ == "__main__":
         test_user_row["userId"], np.zeros(16, dtype=np.float32)
     )
     user_emb = get_user_embedding(
-        model, test_user_feats, test_history_emb, device="mps"
+        model, test_user_feats, test_history_emb, device="cuda"
     )
     candidate_indices = generate_candidates(user_emb, item_emb_matrix, top_k=10)
 
@@ -476,7 +545,7 @@ if __name__ == "__main__":
         model,
         encoders,
         movies,
-        device="mps",
+        device="cuda",
     )
 
     # 9. Print top recommendations
