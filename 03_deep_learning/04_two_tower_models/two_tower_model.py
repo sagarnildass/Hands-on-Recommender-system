@@ -214,18 +214,18 @@ def build_feature_encoders(users_df, items_df, ratings_df):
 
 def encode_features(row, encoders):
     user_feats = (
-        encoders["user_to_idx"].get(row["userId"], 0),
-        encoders["age_to_idx"].get(row["age"], 0),
-        encoders["gender_to_idx"].get(row["gender"], 0),
-        encoders["occupation_to_idx"].get(row["occupation"], 0),
-        encoders["zip_to_idx"].get(row["zip_code"], 0),
-        encoders["context_to_idx"].get(row["context"], 0),
+        encoders["user_to_idx"].get(row.get("userId"), 0),
+        encoders["age_to_idx"].get(row.get("age"), 0),
+        encoders["gender_to_idx"].get(row.get("gender"), 0),
+        encoders["occupation_to_idx"].get(row.get("occupation"), 0),
+        encoders["zip_to_idx"].get(row.get("zip_code"), 0),
+        encoders["context_to_idx"].get(row.get("context", 0), 0),
     )
     item_feats = (
-        encoders["item_to_idx"].get(row["movieId"], 0),
-        encoders["genre_to_idx"].get(row["genre"], 0),
-        encoders["year_to_idx"].get(row["year"], 0),
-        encoders["context_to_idx"].get(row["context"], 0),
+        encoders["item_to_idx"].get(row.get("movieId"), 0),
+        encoders["genre_to_idx"].get(row.get("genre"), 0),
+        encoders["year_to_idx"].get(row.get("year"), 0),
+        encoders["context_to_idx"].get(row.get("context", 0), 0),
     )
     return user_feats, item_feats
 
