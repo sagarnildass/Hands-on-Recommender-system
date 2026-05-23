@@ -12,6 +12,11 @@ from tqdm import tqdm
 import time
 from typing import List, Tuple, Dict, Optional
 
+# Optimize PyTorch for GPU
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
+torch.autograd.set_detect_anomaly(False)
+
 
 class AttentionLayer(nn.Module):
     """
@@ -60,7 +65,7 @@ class AttentionLayer(nn.Module):
             mask = mask.expand(
                 -1, self.num_heads, seq_len, -1
             )  # [batch_size, num_heads, seq_len, seq_len]
-            scores = scores.masked_fill(mask == 0, -1e9)
+            scores = scores.masked_fill(mask == 0, torch.finfo(scores.dtype).min)
 
         # Softmax and dropout
         attention_weights = torch.softmax(scores, dim=-1)
@@ -291,7 +296,7 @@ def train_attention_model(
     val_loader,
     num_epochs=30,
     learning_rate=0.001,
-    device="mps",
+    device="cuda",
     verbose=True,
     patience=5,
 ):
@@ -302,6 +307,7 @@ def train_attention_model(
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
+    scaler = torch.cuda.amp.GradScaler()
 
     train_losses = []
     val_losses = []
@@ -321,18 +327,20 @@ def train_attention_model(
         for batch in tqdm(
             train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False
         ):
-            user_ids = batch["user_id"].squeeze().to(device)
-            item_sequences = batch["item_sequence"].to(device)
-            ratings = batch["rating"].squeeze().to(device)
-            attention_mask = batch["attention_mask"].to(device)
+            user_ids = batch["user_id"].squeeze().to(device, non_blocking=True)
+            item_sequences = batch["item_sequence"].to(device, non_blocking=True)
+            ratings = batch["rating"].squeeze().to(device, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
 
             optimizer.zero_grad()
 
-            predictions, _ = model(user_ids, item_sequences, attention_mask)
-            loss = criterion(predictions, ratings)
+            with torch.amp.autocast('cuda'):
+                predictions, _ = model(user_ids, item_sequences, attention_mask)
+                loss = criterion(predictions, ratings)
 
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             train_loss += loss.item()
 
@@ -347,10 +355,10 @@ def train_attention_model(
             for batch in tqdm(
                 val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False
             ):
-                user_ids = batch["user_id"].squeeze().to(device)
-                item_sequences = batch["item_sequence"].to(device)
-                ratings = batch["rating"].squeeze().to(device)
-                attention_mask = batch["attention_mask"].to(device)
+                user_ids = batch["user_id"].squeeze().to(device, non_blocking=True)
+                item_sequences = batch["item_sequence"].to(device, non_blocking=True)
+                ratings = batch["rating"].squeeze().to(device, non_blocking=True)
+                attention_mask = batch["attention_mask"].to(device, non_blocking=True)
 
                 predictions, _ = model(user_ids, item_sequences, attention_mask)
                 loss = criterion(predictions, ratings)
@@ -383,7 +391,7 @@ def train_attention_model(
     return train_losses, val_losses
 
 
-def evaluate_attention_model(model, test_loader, device="mps"):
+def evaluate_attention_model(model, test_loader, device="cuda"):
     """
     Evaluate the attention-based model
     """
@@ -393,10 +401,10 @@ def evaluate_attention_model(model, test_loader, device="mps"):
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating"):
-            user_ids = batch["user_id"].squeeze().to(device)
-            item_sequences = batch["item_sequence"].to(device)
-            ratings = batch["rating"].squeeze().to(device)
-            attention_mask = batch["attention_mask"].to(device)
+            user_ids = batch["user_id"].squeeze().to(device, non_blocking=True)
+            item_sequences = batch["item_sequence"].to(device, non_blocking=True)
+            ratings = batch["rating"].squeeze().to(device, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
 
             preds, _ = model(user_ids, item_sequences, attention_mask)
 
@@ -410,7 +418,7 @@ def evaluate_attention_model(model, test_loader, device="mps"):
 
 
 def visualize_attention_weights(
-    model, user_id, item_sequence, item_names, device="mps"
+    model, user_id, item_sequence, item_names, device="cuda"
 ):
     """
     Visualize attention weights for a user's item sequence
@@ -472,7 +480,7 @@ def generate_attention_recommendations(
     idx_to_item,
     movies_df,
     n_recommendations=10,
-    device="mps",
+    device="cuda",
 ):
     """
     Generate recommendations using attention-based model
@@ -538,8 +546,8 @@ def run_attention_demo():
     print("=" * 50)
 
     # Set device
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = torch.device("mps")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device("mps")
     print(f"🖥️  Using device: {device}")
 
     # Load data
@@ -580,19 +588,23 @@ def run_attention_demo():
     user_encoder.fit(all_users)
     item_encoder.fit(all_items)
 
-    # Convert sequences to encoded format
+    # Create lookup dictionaries for faster encoding (dict lookup is O(1) vs O(n) for transform)
+    user_to_idx = {user: idx for idx, user in enumerate(user_encoder.classes_)}
+    item_to_idx = {item: idx for idx, item in enumerate(item_encoder.classes_)}
+
+    # Convert sequences to encoded format using dict lookup
     encoded_sequences = []
     for user_id, history, target_item, target_rating in tqdm(
         sequences, desc="Encoding sequences"
     ):
-        if target_item in item_encoder.classes_:
-            encoded_user = user_encoder.transform([user_id])[0]
+        if target_item in item_to_idx:
+            encoded_user = user_to_idx[user_id]
             encoded_history = [
-                item_encoder.transform([item])[0]
+                item_to_idx[item]
                 for item in history
-                if item in item_encoder.classes_
+                if item in item_to_idx
             ]
-            encoded_target = item_encoder.transform([target_item])[0]
+            encoded_target = item_to_idx[target_item]
 
             if len(encoded_history) > 0:
                 encoded_sequences.append(
@@ -620,10 +632,21 @@ def run_attention_demo():
     val_dataset = SequenceDataset(val_sequences, None, max_seq_len=20)
     test_dataset = SequenceDataset(test_sequences, None, max_seq_len=20)
 
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    # Create data loaders with GPU optimization - max out batch size
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=2048,
+        shuffle=True,
+        num_workers=8,
+        pin_memory=True,
+        prefetch_factor=2,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=2048, shuffle=False, num_workers=8, pin_memory=True
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=2048, shuffle=False, num_workers=8, pin_memory=True
+    )
 
     # Initialize model
     num_users = len(user_encoder.classes_)
@@ -632,9 +655,9 @@ def run_attention_demo():
     model = AttentionBasedRecommender(
         num_users=num_users,
         num_items=num_items,
-        embed_dim=64,
-        num_heads=8,
-        num_layers=2,
+        embed_dim=512,
+        num_heads=16,
+        num_layers=8,
         max_seq_len=20,
         dropout=0.1,
     )
