@@ -467,9 +467,9 @@ def run_ncf_demo():
     print("=" * 50)
 
     # Set device
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # Using MPS for Apple Silicon
-    device = torch.device("mps")
+    # device = torch.device("mps")
     print(f"🖥️  Using device: {device}")
 
     # Load data
