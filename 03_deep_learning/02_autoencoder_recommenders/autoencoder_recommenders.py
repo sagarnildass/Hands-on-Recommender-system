@@ -155,7 +155,7 @@ class AutoencoderRecommender(nn.Module):
         val_loader,
         num_epochs=50,
         learning_rate=0.001,
-        device="mps",
+        device="cuda",
         verbose=True,
         patience=5,
     ):
@@ -283,7 +283,7 @@ class AutoencoderRecommender(nn.Module):
 
         return train_losses, val_losses
 
-    def predict_ratings(self, user_ratings, device="mps"):
+    def predict_ratings(self, user_ratings, device="cuda"):
         """
         Predict ratings for a user
         """
@@ -293,7 +293,7 @@ class AutoencoderRecommender(nn.Module):
             reconstructed, _ = self(user_ratings)
             return reconstructed.cpu().numpy()
 
-    def get_user_embeddings(self, user_ratings, device="mps"):
+    def get_user_embeddings(self, user_ratings, device="cuda"):
         """
         Get latent embeddings for users
         """
@@ -303,7 +303,7 @@ class AutoencoderRecommender(nn.Module):
             embeddings = self.get_latent_representation(user_ratings)
             return embeddings.cpu().numpy()
 
-    def evaluate_model(self, test_loader, device="mps"):
+    def evaluate_model(self, test_loader, device="cuda"):
         """
         Evaluate the autoencoder on test data
         """
@@ -420,7 +420,7 @@ def plot_training_history(
 
 
 def generate_autoencoder_recommendations(
-    model, user_ratings, n_recommendations=10, exclude_rated=True, device="mps"
+    model, user_ratings, n_recommendations=10, exclude_rated=True, device="cuda"
 ):
     """
     Generate recommendations using autoencoder
@@ -445,7 +445,7 @@ def generate_autoencoder_recommendations(
     return recommendations[:n_recommendations]
 
 
-def analyze_latent_space(model, user_ratings, device="mps"):
+def analyze_latent_space(model, user_ratings, device="cuda"):
     """
     Analyze the latent space learned by the autoencoder
     """
@@ -468,7 +468,7 @@ def analyze_latent_space(model, user_ratings, device="mps"):
     return embeddings
 
 
-def compare_autoencoder_methods(models_dict, test_loader, device="mps"):
+def compare_autoencoder_methods(models_dict, test_loader, device="cuda"):
     """
     Compare different autoencoder configurations
     """
@@ -494,7 +494,7 @@ def compare_autoencoder_methods(models_dict, test_loader, device="mps"):
     return results
 
 
-def visualize_reconstructions(model, original_ratings, device="mps", n_examples=5):
+def visualize_reconstructions(model, original_ratings, device="cuda", n_examples=5):
     """
     Visualize original vs reconstructed ratings
     """
@@ -528,8 +528,8 @@ def run_autoencoder_demo():
     print("=" * 50)
 
     # Set device
-    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = torch.device("mps")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device("mps")
     print(f"🖥️  Using device: {device}")
 
     # Load data
